@@ -1,0 +1,411 @@
+library(gmodels)
+library(Ckmeans.1d.dp)
+library(tidyverse)
+library(mclust)
+library(fpc)
+library(plotly)
+library(ggplot2)
+library(grDevices)
+library(RColorBrewer)
+library(foreach)
+library(pracma)
+library(dplyr)
+
+library(flowCore)
+library(CytoML)
+library(flowWorkspace)
+library(openCyto)
+
+labels <- function(x){
+  #foreach(n=x) %do% attributes(n)$label
+  attributes(x)$label
+}
+
+z_normalization <- function(){
+  # https://jmotif.github.io/sax-vsm_site/morea/algorithm/znorm.html
+  return(function(data) {
+    if (length(dim(data)) == 0){
+      data <- as.data.frame(data)
+    }
+    apply(data, 2, function(ts){
+      ts.mean <- mean(ts)
+      ts.dev <- sd(ts)
+      (ts - ts.mean)/ts.dev
+    })
+  })
+}
+
+outlier_resistant_minmax <- function(pos=c()){
+  pos <- c(0, pos, 1, 1)
+  return(function(data) {
+    if (length(dim(data)) == 0){
+      data <- as.data.frame(data)
+    }
+    apply(data, 2, function(ts){
+      qtls <- quantile(ts, pos)
+      for (row in seq_along(ts)){
+        for (i in seq_len(length(pos)-1)){
+          if (qtls[i+1] >= ts[row]){
+            if (qtls[i] == qtls[i+1]) ts[row] <- pos[i]
+            else ts[row] <- (ts[row]-qtls[i])/(qtls[i+1]-qtls[i])*(pos[i+1]-pos[i])+pos[i]
+            break();
+          }
+        }
+      }
+      ts
+    })
+  })
+}
+
+bic <- function(data, range){
+  range[which.max(mclustBIC(data, G=range, modelNames="V", verbose=F))]
+}
+
+silhouette <- function(data, range){
+  pamk(data, krange=range)$nc
+}
+
+gmm_clustering <- function(g=1:9, f=bic){
+  return(function(data) Mclust(data, G=f(data, g), modelNames = "V", verbose = F)$classification)
+}
+
+default_kmeans_clustering <- function(k=1:9){
+  return(function(data) suppressWarnings(Ckmeans.1d.dp(data, k = k))$cluster)
+}
+
+kmeans_clustering <- function(k=1:9, f=silhouette){
+  return(function(data) suppressWarnings(Ckmeans.1d.dp(data, k = f(data, k)))$cluster)
+}
+
+make_label <- function(){
+  runif(1, 1000000000000, 9999999999999) %>% round %>% as.character
+}
+
+jitter_height <- function(dendro, ...){
+  attr(dendro, "height") <- jitter(attr(dendro, "height"), ...)
+  if (!is.null(attr(dendro, "leaf")) && attr(dendro, "leaf")) return(dendro)
+  res <- lapply(dendro, function(dend) jitter_height(dend, ...))
+  attributes(res) <- attributes(dendro)
+  return(res)
+}
+
+better_hclust <- function(
+  data,
+  normalization=outlier_resistant_minmax(),
+  clustering=default_kmeans_clustering(),
+  depth=NULL,
+  the_members=NULL
+){
+  if (is.null(the_members)) {
+    the_members <- seq_len(nrow(data))
+  }
+  og <- data
+  if (nrow(data) <= 2 || (!is.null(depth) && depth <= 0)){
+    res <- list(0)
+    attributes(res) <- list(
+      members = 1,
+      midpoint = 0.5,
+      height = 0,
+      label = make_label(),
+      leaf = TRUE,
+      the_members = the_members,
+      avgs = colSums(data) / nrow(data),
+      data = rownames(og)
+    )
+    return(res)
+  }
+  #data <- data %>% select(where(is.numeric) %>% normalization()
+  data <- data %>% normalization()
+  print("Performing PCA")
+  pca <- fast.prcomp(data)
+  print("Performing PCA Done")
+  #config <- umap::umap.defaults
+  #config$n_neighbors <- min(nrow(data), config$n_neighbors)
+  #config$n_components <- 1
+  #pca <- umap::umap(data, config)$layout
+  for (pc in seq_len(ncol(pca$x))){
+    print(paste("Clustering pc", pc))
+    clusters <- clustering(pca$x[,pc])
+    print(paste("Clustering pc", pc, "done"))
+    if (max(clusters) > 1){
+      print("Multimodal!")
+      new_depth = NULL
+      if (!is.null(depth)) {
+        new_depth = depth - 1
+      }
+      res <- lapply(seq_len(max(clusters)), function(clust) better_hclust(
+        data = og[clusters == clust,],
+        normalization = normalization,
+        clustering = clustering,
+        depth = new_depth,
+        the_members = the_members[clusters == clust]
+      ))
+      mems <- res %>% lapply(function(x) attr(x, "members")) %>% unlist() %>% sum()
+      attributes(res) <- list(
+        members = mems,
+        midpoint = mems/ 2,
+        height = res %>% lapply(function(x) attr(x, "height")) %>% unlist() %>% max() + 1,
+        label = make_label(),
+        the_members = the_members,
+        princomp = pca$rotation[,1],
+        avgs = colSums(data) / nrow(data),
+        data = res %>% lapply(function(x) attr(x, "data")) %>% unlist()
+      )
+      class(res) <- "dendrogram"
+      return(res)
+    }
+  }
+  res <- list(0)
+  attributes(res) <- list(
+    members = 1,
+    midpoint = 0.5,
+    height = 0,
+    label = make_label(),
+    leaf = TRUE,
+    the_members = the_members,
+    avgs = colSums(data) / nrow(data),
+    data = rownames(og)
+  )
+  return(res)
+}
+
+testClust <- function(clust, pclust, gh, root, popmem, paths){
+  membershipClust <- as.matrix(popmem[as.numeric(attributes(clust)$the_members),])
+  membershipParent <- as.matrix(popmem[as.numeric(attributes(pclust)$the_members),])
+  if (length(attributes(clust)$the_members) != 1){
+    poscounts <- colCounts(membershipClust)
+  } else {
+    poscounts <- rowCounts(membershipClust)
+  }
+  poscountsParent <- colCounts(membershipParent)
+  names(poscounts) <- paths
+  names(poscountsParent) <- paths
+  rval <- lapply(paths, function(path) {
+    ppath <- ifelse(path == "root", "root", gh_pop_get_parent(gh, path))
+    ppath <- "root"
+    if (!poscounts[[ppath]] || !poscountsParent[[ppath]]){
+      return("No data available for parent")
+    }
+    #test <- binom.test(poscounts[[path]], n = poscounts[[ppath]], p = poscountsParent[[path]]/poscountsParent[[ppath]], alternative = "greater")
+    #test
+    fisher.test(matrix(
+      c(poscounts[[path]], poscounts[[ppath]]-poscounts[[path]],
+        poscountsParent[[path]], poscountsParent[[ppath]]-poscountsParent[[path]]
+      ), ncol=2),
+      alternative="greater"
+    )
+  })
+  names(rval) <- paths
+  attributes(clust)$tests <- rval
+  pval <- lapply(rval, function(test) ifelse(is.character(test), 1, test$p.value))
+  names(pval) <- paths
+  attributes(clust)$pval <- pval
+  attributes(clust)$classification <- ifelse(length(which(pval < 0.01))!=0, paths[[which.min(unlist(pval))]], "root")
+  attributes(clust)$hovertext <- do.call(paste0, as.list(do.call(c, lapply(names(pval)[pval < 0.01], function(path) list(path, " ", pval[[path]], "\n")))))
+  return(clust)
+}
+
+getTests <- function(result, gh, root=NULL){
+  library(matrixStats)
+  paths <- rev(gh_get_pop_paths(gh))
+  popmem <- foreach(pop=paths, .combine='cbind') %do% gh_pop_get_indices(gh, pop)
+  colnames(popmem) <- paths
+  if (is.null(root)){
+    result <- testClust(result, result, gh, result, popmem, paths)
+    root <- result
+  }
+  for (clustno in seq_len(length(result))){
+    # use this code to have "not better than randomly pulling items from the entire dataset" as null hypothesis
+    # clust <- testClust(result[[clustno]], root, gh, root, popmem, paths)
+    # use this code to have "not better than randomly pulling items from the parent cluster" as null hypothesis
+    clust <- testClust(result[[clustno]], result, gh, root, popmem, paths)
+    if (is.null(attributes(clust)$leaf) || !attributes(clust)$leaf){
+      result[[clustno]] <- getTests(clust, gh, root)
+    } else {
+      result[[clustno]] <- clust
+    }
+  }
+  return(result)
+}
+
+
+
+unlist_dendro <- function(d){
+  if (!is.null(attributes(d)$leaf) && attributes(d)$leaf) return(list(d))
+  return(c(list(d), do.call(c, lapply(d, unlist_dendro))))
+}
+
+plot_dendro <- function(d, set = "A", xmin = -50, height = 500, width = 500, ...) {
+  print("a1")
+  # get x/y locations of every node in the tree
+  allXY <- get_xy(d)
+  allXY <- allXY[order(allXY[,2]),]
+  print("a2")
+  # get non-zero heights so we can split on them and find the relevant labels
+  non0 <- allXY[["y"]][allXY[["y"]] > 0]
+  print("a3")
+  # splitting on the minimum height would generate all terminal nodes anyway
+  split <- non0[min(non0) < non0]
+  print("a4")
+  # label is a list-column since non-zero heights have multiple labels
+  # for now, we just have access to terminal node labels
+  labs <- 
+  print("a5")
+  allXY$label <- vector("list", nrow(allXY))
+  allXY$classification <- vector("list", nrow(allXY))
+  allXY$hovertext <- vector("list", nrow(allXY))
+  print("a6")
+  print(allXY$label)
+  print(labs)
+  allXY$label[[1]] <- labs
+  print("a7")
+  allXY$label[allXY$y == 0] <- labs
+  print("a8")
+  
+  # collect all the *unique* non-trivial nodes
+  nodes <- unlist_dendro(d)
+  nodes <- nodes[order(sapply(nodes, function(node) attributes(node)$height))]
+  print("a10")
+  print("a11")
+  labs <- lapply(nodes, labels)
+  names(nodes) <- lapply(labs, function(lab) do.call(paste, as.list(lab)))
+  print("a12")
+  # NOTE: this won't support nodes that have the same height 
+  # but that isn't possible, right?
+  for (i in seq_along(nodes)) {
+    node <- nodes[[i]]
+    allXY$label[[i]] <- labels(node)
+    if (is.null(attributes(node)$classification)){
+      allXY$classification[[i]] <- "root"
+      allXY$hovertext[[i]] <- "leaf"
+    } else {
+      allXY$classification[[i]] <- attributes(node)$classification
+      allXY$hovertext[[i]] <-  attributes(node)$hovertext
+    }
+  }
+  print("a13")
+  tidy_segments <- dendextend::as.ggdend(d)$segments
+  print("a14")
+  allTXT <- allXY[allXY$y == 0, ]
+  print("a15")
+  blank_axis <- list(
+    title = "",
+    showticklabels = FALSE,
+    zeroline = FALSE
+  )
+  print("a16")
+  allXY$members <- sapply(allXY$label, length)
+  print("a17")
+  allTXT$label <- as.character(allTXT$label)
+  print("a18")
+  allXY %>% 
+    plot_ly(x = ~y, y = ~x, color=I("black"), hoverinfo = "none") %>%
+    add_segments(
+      data = tidy_segments, xend = ~yend, yend = ~xend, showlegend = FALSE
+    ) %>%
+    add_markers(
+      data = allXY, x=~y, y=~x, key = ~label,
+      text = ~paste(hovertext), hoverinfo = "text", color = ~unlist(classification), colors = c("black", brewer.pal(8, "Dark2"))
+    ) %>%
+    layout(
+      dragmode = "select", 
+      xaxis = c(blank_axis, list(autorange = TRUE)),
+      yaxis = c(blank_axis, list(autorange = TRUE))
+    )
+}
+
+get_xy <- function(node) {
+  m <- dendextend::get_nodes_xy(node)
+  colnames(m) <- c("x", "y")
+  tibble::as_tibble(m)
+}
+#stop()
+
+#dataDir <- system.file("extdata",package="flowWorkspaceData")
+#load raw FCS
+#fs <- load_cytoset_from_fcs(file.path(dataDir,"CytoTrol_CytoTrol_1.fcs"))
+
+#load the original template for tcell panel
+#tbl <- data.table::fread(system.file("extdata/gating_template/tcell.csv", package = "openCyto"))
+#write the new template to disc
+#gtFile <- tempfile()
+#write.csv(tbl, file = gtFile)
+##reload the new template
+#gt <- gatingTemplate(gtFile)
+
+# do 'manual' gating
+#gs <- GatingSet(fs)
+#comp <- spillover(fs[[1]])[["SPILL"]]
+#chnls <- colnames(comp)
+#comp <- compensation(comp)
+#gs <- compensate(gs, comp)
+#trans <- flowjo_biexp_trans()
+#trans <- transformerList(chnls, trans)
+#gs <- transform(gs, trans)
+#gt_gating(gt, gs)
+#gt_toggle_helpergates(gt, gs)
+# do unsupervised gating
+#res <- better_hclust(as.data.frame(exprs(fs[[1]])), depth=3)
+#View(res)
+# perform statistical tests
+#res <- getTests(res, gs[[1]])
+#View(res)
+# generate ptree
+#p$data <- cbind(newdata, p$data)
+#plot_dendro(res)
+
+main <- function () {
+  # Read data
+  raw_english_data <- read.table("output.csv", header=F, fill = TRUE, sep=",")
+  # Create table of reads
+  english_data_ngrams <- tibble()
+  
+  #for (row in 1:nrow(raw_english_data)) {
+  for (row in 1:500) {
+    # Initialze user
+    english_data_ngrams[row, ] <- 0
+    # Get # of tweets
+    num_tweets <- 0
+    for (tweet in raw_english_data[row, ]) {
+      if (tweet != "") {
+        num_tweets <- num_tweets + 1
+      }
+    }
+    # Iterate through their tweets
+    for (tweet in raw_english_data[row, ]) {
+      # Split tweet into ngrams
+      all_ngrams_for_tweet <- strsplit(tweet, ' ')[[1]]
+      for (ngram in all_ngrams_for_tweet) {
+        # Add ngram
+        if (length(ngram) != 0) {
+          if (!(ngram %in% colnames(english_data_ngrams))) {
+            english_data_ngrams[, ngram] <- 0
+          }
+          english_data_ngrams[row, ngram] <- english_data_ngrams[row, ngram] + (1 / num_tweets)
+        }
+      }
+    }
+    if (mod(row, 100) == 0) {
+      print(paste(row, " / ", nrow(raw_english_data)))
+      #to_include <- c()
+      #for (ngram in colnames(english_data_ngrams)) {
+      #  if (ngram != "" && (colSums(english_data_ngrams)[ngram] * nrow(raw_english_data) / row) > 3) {
+      #    to_include <- c(to_include, ngram)
+      #  }
+      #}
+      #english_data_ngrams <- english_data_ngrams %>% select(to_include)
+      #print(paste(row, " / ", nrow(raw_english_data)))
+    }
+  }
+  View(english_data_ngrams)
+  
+  res_english <- better_hclust(english_data_ngrams, depth=3)
+  members <- foreach(i = seq_len(length(res_english))) %do% raw_english_data[attributes(res_english[[i]])[["the_members"]],]
+  View(members)
+  changes <- foreach(i = seq_len(length(res_english))) %do% { sort((log(attributes(res_english[[i]])[["avgs"]]) - log(attributes(res_english)[["avgs"]]))) }
+  changes <- foreach(i = seq_len(length(res_english))) %do% sort(unlist(ifelse(abs(changes[[i]]) == Inf, NA, changes[[i]])))
+  changes <- foreach(i = seq_len(length(res_english))) %do% changes[[i]][!is.na(changes[[i]])]
+  changes <- foreach(i = seq_len(length(res_english))) %do% changes[[i]][names(sort(-abs(changes[[i]])))]
+  View(changes)
+}
+

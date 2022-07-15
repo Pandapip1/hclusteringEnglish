@@ -1,0 +1,111 @@
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+warnings()
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+install.packages("flowCore", "CytoML", "flowWorkspace", "openCyto")
+BiocManager
+BiocManager::
+BiocManager::install
+install.packages("BioCManager")
+install.packages("BiocManager")
+BiocManager::install("flowCore")
+BiocManager::install("CytoML")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+BiocManager::install("flowWorkspaceData")
+BiocManager::install("flowWorkspaceData")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+BiocManager::install("openCyto")
+gtFile <- system.file("extdata/gating_template/tcell.csv", package = "openCyto")
+gtFile
+dtTemplate <- fread(gtFile, autostart = 1L)
+dtTemplate
+library(data.table)
+dtTemplate <- fread(gtFile, autostart = 1L)
+dtTemplate
+BiocManager::install("openCyto")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+BiocManager::install("openCyto")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+rlang::last_error()
+rlang::last_error()
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+labels(res)
+labels(res)
+View(res)
+label(res)
+label(res[[0]])
+labels(res[[1]])
+papeR::labels(res)
+?labels
+foreach(res) %do% attributes
+foreach(res) %do% attributes()
+foreach(n=res) %do% attributes(n)
+foreach(n=res) %do% attributes(n)$label
+labels <- function(x){
+foreach(n=x) %do% attributes(n)$label
+}
+# generate ptree
+#p$data <- cbind(newdata, p$data)
+plot_dendro(res)
+# generate ptree
+#p$data <- cbind(newdata, p$data)
+plot_dendro(res)
+#foreach(n=x) %do% attributes(n)$label
+attributes(x)$label
+getTests <- function(result, gh, root=NULL){
+library(matrixStats)
+paths <- rev(gh_get_pop_paths(gh))
+popmem <- foreach(pop=paths, .combine='cbind') %do% gh_pop_get_indices(gh, pop)
+colnames(popmem) <- paths
+if (is.null(root)){
+result <- testClust(result, gh, result, popmem, paths)
+root <- result
+}
+for (clustno in seq_len(length(result))){
+# use this code to have "not better than randomly pulling items from the entire dataset" as null hypothesis
+# clust <- testClust(result[[clustno]], gh, root, popmem, paths)
+# use this code to have "not better than randomly pulling items from the parent cluster" as null hypothesis
+clust <- testClust(result[[clustno]], gh, result, popmem, paths)
+if (is.null(attributes(clust)$leaf) || !attributes(clust)$leaf){
+result[[clustno]] <- getTests(clust, gh, root)
+} else {
+result[[clustno]] <- clust
+}
+}
+return(result)
+}
+# do unsupervised gating
+res <- better_hclust(as.data.frame(exprs(fs[[1]])), depth=3)
+# perform statistical tests
+res <- getTests(res, gs[[1]])
+View(res)
+# Read data
+raw_english_data <- read.table("output.csv", header=F, fill = TRUE, sep=",")
+english_data_ngrams <- read.table("ngrams.csv")
+res <- better_hclust(english_data_ngrams, depth=1)
+library(gmodels)
+library(Ckmeans.1d.dp)
+library(tidyverse)
+library(mclust)
+library(fpc)
+library(plotly)
+library(ggplot2)
+library(grDevices)
+library(RColorBrewer)
+library(foreach)
+library(pracma)
+library(dplyr)
+library(flowCore)
+library(CytoML)
+library(flowWorkspace)
+library(openCyto)
+source("~/hclustering/2856524/gavin_autofcgating_v2.R")
+res <- better_hclust(english_data_ngrams, depth=1)
+english_data_ngrams
